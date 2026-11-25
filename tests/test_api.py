@@ -405,6 +405,29 @@ subchannels {
         self.ok("patch", f"/api/services/{sid}", {"mux": none})
         self.assertTrue(any("can't find it" in w for w in self.ok("get", f"/api/services/{sid}/mux")["warnings"]))
 
+    def test_link_text_follows_title(self):
+        self.login_admin()
+        sid = self.new_service()
+        r = self.ok("post", f"/api/services/{sid}/objects", {"type": "text", "title": "Seo é Nuacht MPB", "parent": 0})
+        label = lambda: next(i["label"] for i in next(o for o in self.ok("get", f"/api/services/{sid}")["object_list"]
+                                                      if o["jid"] == 0)["items"] if i["target"] == r["jid"])
+        self.assertEqual(label(), "Seo é Nuacht MPB")
+        self.ok("put", f"/api/objects/{r['id']}", {"title": "Welcome"})
+        self.assertEqual(label(), "Welcome")
+        # text changed on purpose stays put when the title changes again
+        self.ok("post", f"/api/services/{sid}/link-text", {"menu": 0, "target": r["jid"], "label": "Fáilte"})
+        self.ok("put", f"/api/objects/{r['id']}", {"title": "Hello"})
+        self.assertEqual(label(), "Fáilte")
+        st, _ = self.call("post", f"/api/services/{sid}/link-text", {"menu": 0, "target": 0x77, "label": "x"})
+        self.assertEqual(st, 409)
+        st, _ = self.call("post", f"/api/services/{sid}/link-text", {"menu": 0, "target": r["jid"], "label": ""})
+        self.assertEqual(st, 400)
+        # long titles: the link made at creation is cut to 60 characters and still follows
+        long = self.ok("post", f"/api/services/{sid}/objects", {"type": "title", "title": "x" * 80, "parent": 0})
+        self.ok("put", f"/api/objects/{long['id']}", {"title": "Short"})
+        root = next(o for o in self.ok("get", f"/api/services/{sid}")["object_list"] if o["jid"] == 0)
+        self.assertEqual(next(i["label"] for i in root["items"] if i["target"] == long["jid"]), "Short")
+
 
 if __name__ == "__main__":
     unittest.main()
