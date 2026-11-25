@@ -141,6 +141,7 @@ CREATE INDEX IF NOT EXISTS audit_ts ON audit(ts);
 DEFAULT_SETTINGS = {
     "mux_name": "",
     "ensemble": {"ecc": "", "eid": ""},
+    "mux_services": [],  # services found in the last odr-dabmux config read, for attaching Journaline
     "refresh_minutes": 15,
     "timezone": "",
     "allow_private_urls": False,

@@ -337,6 +337,74 @@ subchannels {
         self.assertEqual(st, 403)
         self.assertTrue(r["id"])
 
+    def test_move_links(self):
+        self.login_admin()
+        sid = self.new_service()
+        sub = self.ok("post", f"/api/services/{sid}/objects", {"type": "menu", "title": "Sport", "parent": 0})["jid"]
+        a = self.ok("post", f"/api/services/{sid}/objects", {"type": "title", "title": "A", "parent": 0})["jid"]
+        b = self.ok("post", f"/api/services/{sid}/objects", {"type": "title", "title": "B", "parent": 0})["jid"]
+        items = lambda jid: [i["target"] for i in next(o for o in self.ok("get", f"/api/services/{sid}")["object_list"]
+                                                      if o["jid"] == jid)["items"]]
+        self.assertEqual(items(0), [1, sub, a, b])
+        # reorder within the root: move B before the welcome message, then A to the end
+        self.ok("post", f"/api/services/{sid}/move", {"target": b, "from": 0, "from_index": 3, "to": 0, "index": 0})
+        self.assertEqual(items(0), [b, 1, sub, a])
+        self.ok("post", f"/api/services/{sid}/move", {"target": b, "from": 0, "from_index": 0, "to": 0, "index": 4})
+        self.assertEqual(items(0), [1, sub, a, b])
+        # move A into the sport menu (it needs a link before it can be valid anyway)
+        st, d = self.call("post", f"/api/services/{sid}/move", {"target": a, "from": 0, "from_index": 2, "to": sub})
+        self.assertEqual(st, 200, d)
+        self.assertEqual(items(0), [1, sub, b])
+        self.assertEqual(items(sub), [a])
+        # copy B into sport too (keeps its root link and label)
+        self.ok("post", f"/api/services/{sid}/move", {"target": b, "from": 0, "to": sub, "index": 0, "copy": True})
+        self.assertEqual(items(sub), [b, a])
+        self.assertEqual(items(0), [1, sub, b])
+        # duplicates, self-nesting and moving a menu into its own sub-menu are refused
+        st, _ = self.call("post", f"/api/services/{sid}/move", {"target": b, "from": 0, "to": sub})
+        self.assertEqual(st, 400)
+        st, _ = self.call("post", f"/api/services/{sid}/move", {"target": sub, "from": 0, "to": sub})
+        self.assertEqual(st, 400)
+        inner = self.ok("post", f"/api/services/{sid}/objects", {"type": "menu", "title": "Inner", "parent": sub})["jid"]
+        st, d = self.call("post", f"/api/services/{sid}/move", {"target": sub, "from": 0, "to": inner})
+        self.assertEqual(st, 400)
+        self.assertIn("own sub-menus", d["error"])
+        # unlink (drop on "not linked")
+        self.ok("post", f"/api/services/{sid}/move", {"target": b, "from": sub, "from_index": 0, "to": None})
+        self.assertEqual(items(sub), [a, inner])
+        # an unlinked object can be linked into a menu
+        c = self.ok("post", f"/api/services/{sid}/objects", {"type": "title", "title": "Loose"})["jid"]
+        self.ok("post", f"/api/services/{sid}/move", {"target": c, "to": 0, "index": 1})
+        root = next(o for o in self.ok("get", f"/api/services/{sid}")["object_list"] if o["jid"] == 0)
+        self.assertEqual(root["items"][1], {"target": c, "label": "Loose"})
+        # feed menus can't be edited by dragging into them
+        self.ok("put", "/api/settings", {"allow_private_urls": True})
+        f = self.ok("post", f"/api/services/{sid}/feeds", {"url": self.base + "/news.xml", "mode": "menu"})
+        st, _ = self.call("post", f"/api/services/{sid}/move", {"target": c, "to": f["jid"]})
+        self.assertEqual(st, 400)
+
+    def test_attach_to_audio_stations(self):
+        self.login_admin()
+        sid = self.new_service()
+        s = self.ok("get", f"/api/services/{sid}")
+        mux = dict(s["mux"], standalone=False, linked=[{"uid": "srv-radio1", "label": "Radio 1"}, {"uid": "srv-radio2"}])
+        self.ok("patch", f"/api/services/{sid}", {"mux": mux})
+        sn = self.ok("get", f"/api/services/{sid}/mux")
+        self.assertNotIn("services", sn["json"])
+        comps = sn["json"]["components"]
+        self.assertEqual(sorted(c["service"] for c in comps.values()), ["srv-radio1", "srv-radio2"])
+        self.assertTrue(all(c["subchannel"] == "sub-journaline" and c["datagroup"] for c in comps.values()))
+        self.assertIn("service srv-radio1", sn["info"]["components"])
+        both = dict(mux, standalone=True)
+        self.ok("patch", f"/api/services/{sid}", {"mux": both})
+        sn = self.ok("get", f"/api/services/{sid}/mux")
+        self.assertEqual(len(sn["json"]["components"]), 3)
+        st, _ = self.call("patch", f"/api/services/{sid}", {"mux": dict(mux, linked=[{"uid": "bad uid!"}])})
+        self.assertEqual(st, 400)
+        none = dict(mux, standalone=False, linked=[])
+        self.ok("patch", f"/api/services/{sid}", {"mux": none})
+        self.assertTrue(any("can't find it" in w for w in self.ok("get", f"/api/services/{sid}/mux")["warnings"]))
+
 
 if __name__ == "__main__":
     unittest.main()

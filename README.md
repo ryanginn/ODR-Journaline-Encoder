@@ -74,6 +74,8 @@ Receivers start at the **root object, `0x0000`**, normally the main menu. Each m
 
 Every object is limited to **4 092 bytes** before compression. The editor shows how full it is and refuses to save an object that is too large. Under *Advanced* you can set an **expiry time** (the object is taken off air and receivers hide it), a **lifetime after reception**, **button links**, the **language** for text-to-speech, how often it **repeats** in the carousel, and compression.
 
+**Reorganising:** drag objects and feeds in the tree. Drop one onto a menu to put it inside, or between two links to reorder. Hold **Alt** (Option on a Mac) while dropping to add another link instead of moving it, and drop a link on *Not linked from any menu* to remove it from its menu. Each editor also has an **In menus** box listing where the object is linked from, with *Move to…*, remove and *Add to menu…*; use it on touch screens, where dragging isn't available.
+
 Object IDs are assigned automatically (`0x0001` up) and can be changed. Links follow the change. Tick **favourite** on content that will always live at the same ID (e.g. "Sport headlines") so listeners can bookmark it.
 
 ### RSS and Atom feeds
@@ -146,6 +148,7 @@ components {
 - `userapp "journaline"` makes ODR-DabMux signal user application type 0x44A with the user application data TS 102 979 requires (version 0, no extended header).
 - `type 5` (transparent data channel) is what most Journaline receivers look for. 44 is offered for newer receivers.
 - `datagroup true` is required: Journaline is carried in MSC data groups.
+- **Attaching to your audio stations** (*Where listeners find it* on the Mux config tab): Journaline can be its own data service (its own entry in the station list), attached to one or more audio stations, or both. An attached station gets an extra component that points at the same Journaline subchannel, so receivers offer the news while someone listens to that station, and the data is only sent once. Pick the stations from your config (*Read my config…*) or type their service uid. Put each extra component after that station's audio component in your config, so the audio stays its primary component.
 - The data service id is 32-bit: `ECC + EId + 2 hex digits`. Read your config (`.mux` or `.json`) and the ECC/EId and a free subchannel id are filled in.
 - The packet size follows the bitrate, as in the SPI WebFrontend: the largest packet that fits a whole number of times into each 24 ms frame.
 - The output file is **rewritten in place** by default, because ODR-DabMux keeps the file open and rewinds it.

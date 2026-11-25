@@ -11,6 +11,9 @@ DEFAULT_MUX = {
     "service_uid": "srv-journaline", "service_id": "", "label": "Journaline", "short_label": "News",
     "subchannel_uid": "sub-journaline", "subchannel_id": 30, "protection_profile": "EEP_A", "protection": 3,
     "component_uid": "comp-journaline", "dscty": 5,
+    # standalone: Journaline is its own data service (its own entry in receivers' station lists)
+    # linked: audio services (by uid in the mux config) that also carry it as a secondary component
+    "standalone": True, "linked": [],
 }
 
 
@@ -20,6 +23,10 @@ def mux_settings(service):
     sid = (service.get("id") or 1)
     m["service_uid"] = m["service_uid"] or f"srv-journaline-{sid}"
     return m
+
+
+def linked_component_uid(m, service_uid):
+    return f"{m['component_uid']}-{service_uid}"[:64]
 
 
 def service_id(m, ensemble):
@@ -47,24 +54,60 @@ def snippet(service, ensemble=None):
     if not m.get("service_id") and not (ensemble or {}).get("ecc"):
         warnings.append("The service id is a placeholder - set it (32-bit, e.g. e1c185a1) under the mux settings, "
                         "or read your ensemble from your odr-dabmux config.")
-    js = {
-        "services": {m["service_uid"]: {"id": f"0x{sid}", "label": m["label"], "shortlabel": m["short_label"]}},
-        "subchannels": {m["subchannel_uid"]: {
-            "type": "packet", "bitrate": int(service["bitrate"]), "id": int(m["subchannel_id"]),
-            "protection-profile": m["protection_profile"], "protection": int(m["protection"]),
-            "inputproto": "file", "inputuri": path}},
-        "components": {m["component_uid"]: {
-            "type": int(m["dscty"]), "service": m["service_uid"], "subchannel": m["subchannel_uid"],
-            "user-applications": {"userapp": "journaline"},
-            "address": f"0x{int(service['packet_address']):x}", "datagroup": True}},
-    }
-    info = {
-        "services": f'''{m["service_uid"]} {{
+    dscty = int(m["dscty"])
+    addr = f"0x{int(service['packet_address']):x}"
+    linked = [l for l in m.get("linked") or [] if l.get("uid")]
+    if not m.get("standalone", True) and not linked:
+        warnings.append("This service is neither a separate data service nor attached to an audio station, so "
+                        "receivers can't find it. Turn on the separate service or attach it to a station.")
+    if linked:
+        warnings.append("Put each attached component after that station's audio component in the components "
+                        "section, so the audio stays the station's primary component.")
+
+    def comp_json(service_uid, label=None):
+        c = {"type": dscty, "service": service_uid, "subchannel": m["subchannel_uid"]}
+        if label:
+            c["label"] = label
+        c.update({"user-applications": {"userapp": "journaline"}, "address": addr, "datagroup": True})
+        return c
+
+    def comp_info(uid, service_uid, label=None, note=None):
+        lines = [f"{uid} {{"]
+        if note:
+            lines.append(f"    ; {note}")
+        lines.append(f"    ; {'5 = transparent data channel, as used by Journaline receivers' if dscty == 5 else 'data service component type'}")
+        lines += [f"    type {dscty}", f"    service {service_uid}", f"    subchannel {m['subchannel_uid']}"]
+        if label:
+            lines.append(f'    label "{label}"')
+        lines += ["    user-applications {", '        userapp "journaline"', "    }", f"    address {addr}",
+                  "    datagroup true", "}"]
+        return "\n".join(lines)
+
+    js = {"services": {}, "subchannels": {m["subchannel_uid"]: {
+        "type": "packet", "bitrate": int(service["bitrate"]), "id": int(m["subchannel_id"]),
+        "protection-profile": m["protection_profile"], "protection": int(m["protection"]),
+        "inputproto": "file", "inputuri": path}}, "components": {}}
+    info_services, info_components = [], []
+    if m.get("standalone", True):
+        js["services"][m["service_uid"]] = {"id": f"0x{sid}", "label": m["label"], "shortlabel": m["short_label"]}
+        js["components"][m["component_uid"]] = comp_json(m["service_uid"])
+        info_services.append(f'''{m["service_uid"]} {{
     id 0x{sid}
     label "{m["label"]}"
     shortlabel "{m["short_label"]}"
-}}''',
-        "subchannels": f'''{m["subchannel_uid"]} {{
+}}''')
+        info_components.append(comp_info(m["component_uid"], m["service_uid"]))
+    for l in linked:
+        uid = linked_component_uid(m, l["uid"])
+        js["components"][uid] = comp_json(l["uid"], m["label"])
+        info_components.append(comp_info(uid, l["uid"], m["label"],
+                                         f"Journaline for {l.get('label') or l['uid']}: after its audio component"))
+    if not js["services"]:
+        del js["services"]
+    info = {}
+    if info_services:
+        info["services"] = "\n".join(info_services)
+    info["subchannels"] = f'''{m["subchannel_uid"]} {{
     type packet
     bitrate {int(service["bitrate"])}
     id {int(m["subchannel_id"])}
@@ -72,19 +115,9 @@ def snippet(service, ensemble=None):
     protection {int(m["protection"])}
     inputproto file
     inputuri "{path}"
-}}''',
-        "components": f'''{m["component_uid"]} {{
-    ; {"5 = transparent data channel, as used by Journaline receivers" if int(m["dscty"]) == 5 else "data service component type"}
-    type {int(m["dscty"])}
-    service {m["service_uid"]}
-    subchannel {m["subchannel_uid"]}
-    user-applications {{
-        userapp "journaline"
-    }}
-    address 0x{int(service["packet_address"]):x}
-    datagroup true
-}}''',
-    }
+}}'''
+    if info_components:
+        info["components"] = "\n".join(info_components)
     return {"info": info, "json": js, "warnings": warnings,
             "packet_size": msc.packet_size_for(int(service["bitrate"]))}
 
@@ -173,6 +206,8 @@ def read_config(text):
         "ensemble": {"ecc": hx(ens.get("ecc"), 2), "eid": hx(ens.get("id"), 4), "label": str(ens.get("label", ""))},
         "subchannel_ids": used_ids, "free_subchannel_id": free,
         "services": sorted(str(s.get("id", "")) for s in (cfg.get("services") or {}).values() if isinstance(s, dict)),
+        "service_list": [{"uid": k, "id": str(v.get("id", "")), "label": str(v.get("label", ""))}
+                         for k, v in (cfg.get("services") or {}).items() if isinstance(v, dict)][:200],
         "packet_subchannels": sorted(k for k, s in subs.items() if isinstance(s, dict) and s.get("type") == "packet"),
         "packet_addresses": addresses,
     }

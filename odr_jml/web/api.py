@@ -353,6 +353,8 @@ def read_mux_config():
         db.set_setting("ensemble", {"ecc": info["ensemble"]["ecc"], "eid": info["ensemble"]["eid"]})
         if not db.get_setting("mux_name") and info["ensemble"]["label"]:
             db.set_setting("mux_name", info["ensemble"]["label"][:64])
+    if request.form.get("save_ensemble") == "1":
+        db.set_setting("mux_services", info["service_list"])
     audit("mux.read", name[:200])
     return jsonify(info)
 
@@ -416,6 +418,7 @@ def _mux_fields(m):
     if not isinstance(m, dict):
         raise ApiError("Invalid mux settings.")
     ident = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+    ident_long = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
     out = {}
     for k in ("service_uid", "subchannel_uid", "component_uid"):
         v = _str(m, k, 32, True, k)
@@ -436,6 +439,21 @@ def _mux_fields(m):
     out["protection_profile"] = m["protection_profile"]
     out["protection"] = _int(m, "protection", 1, 4, "Protection level")
     out["dscty"] = _int(m, "dscty", 0, 63, "Component type")
+    out["standalone"] = bool(m.get("standalone", True))
+    linked = m.get("linked") or []
+    if not isinstance(linked, list) or len(linked) > 32:
+        raise ApiError("Attach to at most 32 stations.")
+    out["linked"] = []
+    for l in linked:
+        if not isinstance(l, dict):
+            raise ApiError("Invalid station.")
+        uid = _str(l, "uid", 64, True, "Station uid")
+        if not ident_long.match(uid):
+            raise ApiError(f"Station uid {uid[:40]} may only contain letters, digits, - and _ "
+                           "(use the name from the services section of your odr-dabmux config).")
+        if uid in (out["service_uid"],) or any(x["uid"] == uid for x in out["linked"]):
+            continue
+        out["linked"].append({"uid": uid, "label": _str(l, "label", 64, False, "Station name")})
     return out
 
 
@@ -819,6 +837,85 @@ def _retarget(sid, old, new):
                  (json.dumps(ni), json.dumps(nl), time.time(), m["id"]))
 
 
+def _menu_descendants(sid, root):
+    """Every object reachable from `root` through menu links (manual menus only)."""
+    menus = {m["jid"]: [i["target"] for i in json.loads(m["items"])]
+             for m in db.q("SELECT jid, items FROM objects WHERE service_id = ? AND type = 'menu'", (sid,))}
+    seen, todo = set(), [root]
+    while todo:
+        for t in menus.get(todo.pop(), []):
+            if t not in seen:
+                seen.add(t)
+                todo.append(t)
+    return seen
+
+
+@bp.post("/api/services/<int:sid>/move")
+@require("editor")
+def move_link(sid):
+    """Reorganise the tree: move (or, with copy, add) a link to `target` from
+    menu `from` (at `from_index`) into menu `to` at `index`. `to` = null only
+    removes the link from `from`."""
+    check_service(sid)
+    data = json_body()
+    target = _jid(data.get("target"), "Object")
+    if target not in build.used_ids(sid):
+        raise ApiError("That object doesn't exist.", 404)
+    src = _jid(data["from"], "Source menu") if data.get("from") not in (None, "") else None
+    dst = _jid(data["to"], "Target menu") if data.get("to") not in (None, "") else None
+    copy = bool(data.get("copy"))
+    if src is None and dst is None:
+        raise ApiError("Nothing to move.")
+
+    def menu(jid, label):
+        m = db.q1("SELECT * FROM objects WHERE service_id = ? AND jid = ?", (sid, jid))
+        if not m or m["type"] != "menu":
+            raise ApiError(f"The {label} isn't a menu you can edit (feed menus are filled by the feed).")
+        return m, json.loads(m["items"])
+
+    with db.transaction():
+        label, removed_at = None, None
+        if src is not None and not copy:
+            sm, sitems = menu(src, "source")
+            i = data.get("from_index")
+            if not (isinstance(i, int) and 0 <= i < len(sitems) and sitems[i]["target"] == target):
+                i = next((n for n, it in enumerate(sitems) if it["target"] == target), None)
+            if i is None:
+                raise ApiError("That menu doesn't link to the object any more - reload the page.", 409)
+            label = sitems.pop(i)["label"]
+            removed_at = i
+            if dst != src:
+                db.x("UPDATE objects SET items = ?, updated_at = ? WHERE id = ?", (json.dumps(sitems), time.time(), sm["id"]))
+        if dst is not None:
+            if dst == target:
+                raise ApiError("A menu can't be put inside itself.")
+            if target != 0 and not copy and src is not None and dst in _menu_descendants(sid, target):
+                raise ApiError("That would put a menu inside one of its own sub-menus and cut it off from the root.")
+            dm, ditems = (sm, sitems) if (dst == src and not copy) else menu(dst, "target")
+            if any(it["target"] == target for it in ditems):
+                raise ApiError("That menu already links to this object.")
+            if len(ditems) >= jml.MAX_MENU_ITEMS:
+                raise ApiError(f"That menu already has {jml.MAX_MENU_ITEMS} links - the most a menu can hold.")
+            if label is None:
+                ref = next((it["label"] for m in db.q("SELECT items FROM objects WHERE service_id = ?", (sid,))
+                            for it in json.loads(m["items"]) if it["target"] == target), None)
+                if ref is None:
+                    o = db.q1("SELECT title FROM objects WHERE service_id = ? AND jid = ?", (sid, target)) or \
+                        db.q1("SELECT COALESCE(NULLIF(title, ''), NULLIF(name, ''), 'News') AS title FROM feeds "
+                              "WHERE service_id = ? AND jid = ?", (sid, target))
+                    ref = (o["title"] if o else "")[:60] or hex(target)
+                label = ref
+            idx = data.get("index")
+            if isinstance(idx, int) and dst == src and removed_at is not None and removed_at < idx:
+                idx -= 1  # `index` counts the links as they were before the move
+            idx = len(ditems) if not isinstance(idx, int) else max(0, min(idx, len(ditems)))
+            ditems.insert(idx, {"target": target, "label": label})
+            db.x("UPDATE objects SET items = ?, updated_at = ? WHERE id = ?", (json.dumps(ditems), time.time(), dm["id"]))
+    db.mark_dirty()
+    audit("tree.move", f"{sid}:0x{target:04X}", {"from": src, "to": dst, "copy": copy})
+    return jsonify(ok=True)
+
+
 @bp.put("/api/objects/<int:oid>")
 @require("editor")
 def update_object(oid):
@@ -1098,7 +1195,7 @@ def delete_user(uid):
 
 # --- settings -----------------------------------------------------------------------------
 
-SETTING_KEYS = ("mux_name", "ensemble", "refresh_minutes", "timezone", "allow_private_urls", "session_hours",
+SETTING_KEYS = ("mux_name", "ensemble", "mux_services", "refresh_minutes", "timezone", "allow_private_urls", "session_hours",
                 "setup_complete")
 
 
@@ -1106,7 +1203,7 @@ SETTING_KEYS = ("mux_name", "ensemble", "refresh_minutes", "timezone", "allow_pr
 @require()
 def get_settings():
     s = db.all_settings()
-    keys = SETTING_KEYS if current_user()["role"] == "admin" else ("mux_name", "ensemble", "timezone")
+    keys = SETTING_KEYS if current_user()["role"] == "admin" else ("mux_name", "ensemble", "mux_services", "timezone")
     return jsonify({k: s[k] for k in keys})
 
 

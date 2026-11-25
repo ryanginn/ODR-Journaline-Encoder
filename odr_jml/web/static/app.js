@@ -924,7 +924,66 @@ function serviceContent(root, s, selParam) {
     history.replaceState(null, "", `#/services/${s.id}/content/${hex4(jid)}`);
     drawTree(); drawEditor();
   };
-  const row = (node, depth, label, seen, path) => {
+  // ---- drag and drop: move links between menus, reorder them, or (Alt/Ctrl) add another link ----
+  let drag = null;
+  const isManualMenu = (jid) => { const n = nodes.get(jid); return !!n && n.kind === "object" && n.type === "menu"; };
+  const clearMarks = () => tree.querySelectorAll(".drop-into, .drop-before, .drop-after, .drop-out").forEach((el) => el.classList.remove("drop-into", "drop-before", "drop-after", "drop-out"));
+  const wantsCopy = (e) => e.altKey || e.ctrlKey || e.metaKey;
+  const dropMode = (e, el, ctx) => {
+    if (ctx.unlink) return drag.from !== null && drag.from !== undefined ? "out" : null;
+    const r = el.getBoundingClientRect();
+    const y = (e.clientY - r.top) / r.height;
+    const canInto = ctx.into !== undefined && isManualMenu(ctx.into) && ctx.into !== drag.target;
+    const canSibling = ctx.parent !== null && ctx.parent !== undefined && isManualMenu(ctx.parent) && ctx.parent !== drag.target;
+    if (canInto && (!canSibling || (y > 0.25 && y < 0.75))) return "into";
+    if (canSibling) return y < 0.5 ? "before" : "after";
+    return null;
+  };
+  const dnd = (el, ctx) => {
+    if (!isEditor()) return el;
+    if (ctx.draggable) {
+      el.draggable = true;
+      el.addEventListener("dragstart", (e) => {
+        drag = { target: ctx.target, from: ctx.parent ?? null, fromIndex: ctx.index ?? null };
+        e.dataTransfer.effectAllowed = "copyMove";
+        e.dataTransfer.setData("text/plain", hex4(ctx.target));
+        el.classList.add("dragging"); tree.classList.add("dragging-on");
+      });
+      el.addEventListener("dragend", () => { drag = null; el.classList.remove("dragging"); tree.classList.remove("dragging-on"); clearMarks(); });
+    }
+    el.addEventListener("dragover", (e) => {
+      if (!drag) return;
+      const m = dropMode(e, el, ctx);
+      clearMarks();
+      if (!m) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = wantsCopy(e) && m !== "out" ? "copy" : "move";
+      el.classList.add("drop-" + m);
+    });
+    el.addEventListener("dragleave", (e) => { if (!el.contains(e.relatedTarget)) el.classList.remove("drop-into", "drop-before", "drop-after", "drop-out"); });
+    el.addEventListener("drop", async (e) => {
+      if (!drag) return;
+      const m = dropMode(e, el, ctx);
+      clearMarks();
+      if (!m) return;
+      e.preventDefault();
+      const d = drag; drag = null;
+      const copy = wantsCopy(e) && m !== "out";
+      const body = { target: d.target, from: d.from, from_index: d.fromIndex, copy };
+      if (m === "out") body.to = null;
+      else if (m === "into") { body.to = ctx.into; body.index = null; }
+      else { body.to = ctx.parent; body.index = ctx.index + (m === "after" ? 1 : 0); }
+      try {
+        await api("POST", `/api/services/${s.id}/move`, body);
+        toast(m === "out" ? "Link removed - click Apply to publish." : copy ? "Link added - click Apply to publish." : "Moved - click Apply to publish.", "ok");
+        if (body.to !== null && body.to !== undefined) collapsed.delete(body.to);
+        reload(d.target);
+      } catch (ex) { /* toasted */ }
+    });
+    return el;
+  };
+
+  const row = (node, depth, label, seen, path, parent = null, index = null) => {
     const kids = childrenOf(node);
     const isOpen = !collapsed.has(node.jid);
     const issue = issues.get(node.jid);
@@ -940,22 +999,23 @@ function serviceContent(root, s, selParam) {
       h("span", { class: "jl-title ellipsis" }, label && label !== node.title ? [label, h("span", { class: "muted" }, "  →  " + node.title)] : node.title || "(no title)"),
       issue ? h("i", { class: "dot " + (issue === "error" ? "red" : "amber"), title: issue === "error" ? "Has errors" : "Has warnings" }) : null,
       h("span", { class: "jl-id mono" }, hex4(node.jid)));
-    tree.appendChild(r);
+    tree.appendChild(dnd(r, { target: node.jid, into: node.jid, parent, index, draggable: node.jid !== 0 }));
     if (!kids.length || !isOpen) return;
-    for (const k of kids) {
+    kids.forEach((k, i) => {
       const child = nodes.get(k.target);
       if (!child) {
-        tree.appendChild(h("div", { class: "jl-node missing", style: `--depth:${depth + 1}` }, h("span", { class: "jl-twist" }), h("span", { class: "type-badge red" }, icon("alert")),
-          h("span", { class: "jl-title" }, k.label, h("span", { class: "muted" }, " → missing object")), h("span", { class: "jl-id mono" }, hex4(k.target))));
+        tree.appendChild(dnd(h("div", { class: "jl-node missing", style: `--depth:${depth + 1}` }, h("span", { class: "jl-twist" }), h("span", { class: "type-badge red" }, icon("alert")),
+          h("span", { class: "jl-title" }, k.label, h("span", { class: "muted" }, " → missing object")), h("span", { class: "jl-id mono" }, hex4(k.target))),
+          { target: k.target, parent: node.jid, index: i, draggable: false }));
       } else if (path.has(k.target) || seen.has(k.target)) {
-        tree.appendChild(h("div", { class: "jl-node ref", style: `--depth:${depth + 1}`, onclick: () => select(k.target) }, h("span", { class: "jl-twist" }),
-          h("span", { class: "type-badge" }, icon("cornerDown")), h("span", { class: "jl-title ellipsis" }, k.label, h("span", { class: "muted" }, `  →  ${child.title}`)),
-          h("span", { class: "jl-id mono" }, hex4(k.target))));
+        tree.appendChild(dnd(h("div", { class: "jl-node ref", style: `--depth:${depth + 1}`, onclick: () => select(k.target), title: "Also linked from here - the object is shown in full where it first appears" },
+          h("span", { class: "jl-twist" }), h("span", { class: "type-badge" }, icon("cornerDown")), h("span", { class: "jl-title ellipsis" }, k.label, h("span", { class: "muted" }, `  →  ${child.title}`)),
+          h("span", { class: "jl-id mono" }, hex4(k.target))), { target: k.target, into: k.target, parent: node.jid, index: i, draggable: k.target !== 0 }));
       } else {
         seen.add(k.target);
-        row(child, depth + 1, k.label, seen, new Set([...path, k.target]));
+        row(child, depth + 1, k.label, seen, new Set([...path, k.target]), node.jid, i);
       }
-    }
+    });
   };
   const drawTree = () => {
     clear(tree);
@@ -963,10 +1023,10 @@ function serviceContent(root, s, selParam) {
     if (nodes.has(0)) row(nodes.get(0), 0, null, seen, new Set([0]));
     else tree.appendChild(h("div", { class: "banner red" }, icon("alert"), "There is no root object (0x0000). Receivers start there - add a menu with ID 0x0000."));
     const orphans = [...nodes.values()].filter((n) => !seen.has(n.jid)).sort((a, b) => a.jid - b.jid);
-    if (orphans.length) {
-      tree.appendChild(h("div", { class: "jl-sep small muted" }, "Not linked from any menu"));
-      for (const n of orphans) { seen.add(n.jid); row(n, 0, null, seen, new Set([n.jid])); }
-    }
+    tree.appendChild(dnd(h("div", { class: "jl-sep jl-unlink small muted" }, "Not linked from any menu",
+      isEditor() ? h("span", { class: "jl-unlink-hint" }, " · drop a link here to remove it from its menu") : null), { unlink: true }));
+    for (const n of orphans) { seen.add(n.jid); row(n, 0, null, seen, new Set([n.jid])); }
+    if (!orphans.length) tree.appendChild(h("div", { class: "jl-empty small muted" }, "Everything is linked."));
   };
   const drawEditor = () => {
     clear(editor);
@@ -981,7 +1041,7 @@ function serviceContent(root, s, selParam) {
       h("ul", { class: "warn-list" }, s.errors.slice(0, 8).map((e) => h("li", null, h("span", null, e.message)))))) : null,
     problems.length || s.errors.length ? h("div", { class: "section-gap" }) : null,
     h("div", { class: "jl-split" },
-      h("div", { class: "card" }, h("div", { class: "card-head" }, h("div", { class: "grow" }, h("h2", null, "Menu tree"), h("p", null, "What listeners can navigate, starting at the root menu.")),
+      h("div", { class: "card" }, h("div", { class: "card-head" }, h("div", { class: "grow" }, h("h2", null, "Menu tree"), h("p", null, isEditor() ? "Drag to move or reorder - onto a menu to put it inside. Hold Alt (Option) to add another link instead." : "What listeners can navigate, starting at the root menu.")),
         isEditor() ? btn("Object", { cls: "sm", icon: "plus", onclick: () => addObject(s, nodes, selected, reload) }) : null,
         isEditor() ? btn("RSS feed", { cls: "sm", icon: "rss", onclick: () => addFeed(s, nodes, selected, reload) }) : null),
         h("div", { class: "card-body" }, tree)),
@@ -1058,6 +1118,34 @@ function addFeed(s, nodes, selected, reload) {
   });
 }
 
+function menusBox(s, jid, nodes, reload) {
+  // where this object is linked from, with remove buttons and an "add to menu" picker
+  const parents = [];
+  for (const n of nodes.values()) {
+    if (n.kind !== "object" || n.type !== "menu") continue;
+    n.data.items.forEach((it, i) => { if (it.target === jid) parents.push({ menu: n, index: i, label: it.label }); });
+  }
+  const ed = isEditor();
+  const move = async (body, msg) => {
+    try { await api("POST", `/api/services/${s.id}/move`, { target: jid, ...body }); toast(msg + " - click Apply to publish.", "ok"); reload(jid); } catch (e) { /* toasted */ }
+  };
+  const options = [...nodes.values()].filter((n) => n.kind === "object" && n.type === "menu" && n.jid !== jid && !parents.some((p) => p.menu.jid === n.jid))
+    .sort((a, b) => a.jid - b.jid);
+  const pick = sel("", [["", "Add to menu…"], ...options.map((m) => [m.jid, `${hex4(m.jid)} · ${m.title}`])], { "aria-label": "Add to menu" });
+  pick.addEventListener("change", () => { if (pick.value !== "") move({ to: +pick.value }, "Added to the menu"); });
+  const moveTo = (p) => sel("", [["", "Move to…"], ...options.map((m) => [m.jid, `${hex4(m.jid)} · ${m.title}`])], { "aria-label": "Move to another menu",
+    onchange: (e) => { if (e.target.value !== "") move({ from: p.menu.jid, from_index: p.index, to: +e.target.value }, "Moved"); } });
+  return h("div", { class: "field" }, h("div", { class: "label-row" }, h("label", null, "In menus")),
+    h("div", { class: "stack tight" },
+      jid === 0 ? h("div", { class: "small muted" }, "The root object - receivers start here.") : null,
+      !parents.length && jid !== 0 ? h("div", { class: "small muted" }, "Not linked from any menu yet, so listeners can't reach it.") : null,
+      parents.map((p) => h("div", { class: "jl-parent-row" }, typeBadge("menu"),
+        h("span", { class: "grow ellipsis" }, h("b", null, p.menu.title), h("span", { class: "muted" }, `  ${hex4(p.menu.jid)} · link “${p.label}”`)),
+        ed && options.length ? moveTo(p) : null,
+        ed ? iconBtn("x", "Remove from this menu", () => move({ from: p.menu.jid, from_index: p.index, to: null }, "Removed from the menu")) : null)),
+      ed && options.length ? h("div", { class: "jl-add-menu" }, pick) : null));
+}
+
 function byteMeter(n, max = MAX_OBJECT) {
   const pct = Math.min(100, Math.round((n / max) * 100));
   return h("div", { class: "jl-meter" + (n > max ? " over" : pct > 85 ? " warn" : ""), title: `${n} of ${max} bytes` },
@@ -1091,7 +1179,7 @@ function objectEditor(root, s, o, nodes, reload) {
       iconBtn("eye", "Show in the receiver preview", () => { location.hash = `#/services/${s.id}/preview/${hex4(o.jid)}`; })),
     h("div", { class: "card-body stack" },
       h("div", { class: "jl-head-grid" }, field(o.type === "title" ? "Ticker text" : "Title", title, { max: o.type === "title" ? 1000 : 200 }), field("Object ID", jid)),
-      body.el, adv.el, ed ? statik.el : null, sizeBox,
+      body.el, menusBox(s, o.jid, nodes, reload), adv.el, ed ? statik.el : null, sizeBox,
       o.note ? h("div", { class: "small muted" }, "Note: ", o.note) : null),
     ed ? h("div", { class: "card-foot" }, o.jid === 0 ? h("span", { class: "small muted" }, "The root object is where receivers start.") : btn("Delete", { cls: "danger", icon: "trash", onclick: async () => {
       if (!(await confirmDialog(`Delete "${o.title}" (${hex4(o.jid)})? Links to it are removed from menus.`, { danger: true, okText: "Delete" }))) return;
@@ -1246,6 +1334,7 @@ function feedEditor(root, s, f, nodes, reload) {
           try { await api("POST", `/api/feeds/${f.id}/refresh`, {}); toast("Feed refreshed.", "ok"); reload(f.jid); } catch (e) { /* toasted */ }
         } }) : null),
       f.headlines.length ? h("div", { class: "jl-headlines" }, h("div", { class: "small muted" }, "Current headlines"), h("ol", null, f.headlines.map((t) => h("li", null, t)))) : null,
+      menusBox(s, f.jid, nodes, reload),
       h("div", { class: "jl-head-grid" }, field("Feed URL", url), field("Object ID", jid)),
       h("div", { class: "grid-2" }, field("Show as", mode), field("Title", title)),
       h("div", { class: "grid-3" }, field("Stories", max), field("Story text", itemText), field("Name", name)),
@@ -1434,7 +1523,7 @@ async function serviceMux(root, s) {
   const box = h("div");
   const fmt = formatSwitch((k) => put(clear(box), muxSnippet(sn, k)));
   put(box, muxSnippet(sn, fmt.get()));
-  put(root,
+  put(root, await stationLinksCard(s, m, ed), h("div", { class: "section-gap" }),
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("div", { class: "grow" }, h("h2", null, "Mux settings"), h("p", null, "Used only to build the example below - this tool never edits your odr-dabmux config.")),
       ed ? btn("Read my config…", { cls: "sm", icon: "import", onclick: async () => {
         const r = await readMuxConfig({ saveEnsemble: true });
@@ -1447,13 +1536,59 @@ async function serviceMux(root, s) {
         h("div", { class: "grid-4" }, field("Subchannel uid", f.subchannel_uid), field("Subchannel id", f.subchannel_id, { hint: "Must be unused in your mux" }), field("Protection profile", f.protection_profile), field("Protection level", f.protection)),
         h("div", { class: "grid-2" }, field("Component uid", f.component_uid), field("Component type (DSCTy)", f.dscty))),
       ed ? h("div", { class: "card-foot" }, h("span", { class: "spacer" }), btn("Save", { cls: "primary", onclick: async () => {
-        const mux = {}; for (const [k, el] of Object.entries(f)) mux[k] = el.value;
+        const mux = { standalone: m.standalone, linked: m.linked }; for (const [k, el] of Object.entries(f)) mux[k] = el.value;
         mux.subchannel_id = +mux.subchannel_id; mux.protection = +mux.protection; mux.dscty = +mux.dscty;
         try { await api("PATCH", `/api/services/${s.id}`, { mux }); toast("Saved.", "ok"); route(); } catch (e) { /* toasted */ }
       } })) : null),
     h("div", { class: "section-gap" }),
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("div", { class: "grow" }, h("h2", null, "Example entries"), h("p", null, `Packet size ${sn.packet_size} bytes at ${s.bitrate} kbps.`)), fmt.el),
       h("div", { class: "card-body stack" }, sn.warnings.map((w) => h("div", { class: "banner amber" }, icon("alert"), w)), box)));
+}
+
+async function stationLinksCard(s, m, ed) {
+  // where listeners find this Journaline service: its own data service, and/or attached to audio stations
+  const settings = await api("GET", "/api/settings");
+  let linked = (m.linked || []).map((l) => ({ ...l }));
+  const standalone = toggle("Separate data service - its own entry in receivers' station lists", m.standalone !== false, { disabled: !ed });
+  const list = h("div", { class: "stack tight" });
+  const known = settings.mux_services || [];
+  const picker = h("div", { class: "row wrap jl-station-picker" });
+  const draw = () => {
+    clear(list);
+    if (!linked.length) list.appendChild(h("div", { class: "small muted" }, "Not attached to any station."));
+    linked.forEach((l, i) => list.appendChild(h("div", { class: "jl-parent-row" }, icon("radio"),
+      h("span", { class: "grow ellipsis" }, h("b", null, l.label || l.uid), h("span", { class: "muted mono" }, `  ${l.uid}`)),
+      ed ? iconBtn("x", "Detach from this station", () => { linked.splice(i, 1); draw(); }) : null)));
+    clear(picker);
+    if (!ed) return;
+    const avail = known.filter((k) => !linked.some((l) => l.uid === k.uid) && k.uid !== m.service_uid);
+    if (avail.length) {
+      const pick = sel("", [["", "Attach to a station from your config…"], ...avail.map((k) => [k.uid, `${k.label || k.uid}  (${k.uid}${k.id ? ", " + k.id : ""})`])]);
+      pick.addEventListener("change", () => { const k = avail.find((x) => x.uid === pick.value); if (k) { linked.push({ uid: k.uid, label: k.label }); draw(); } });
+      picker.appendChild(pick);
+    }
+    const uid = inp("", { class: "mono", placeholder: "or type a service uid, e.g. srv-radio1", maxlength: 64 });
+    picker.append(uid, btn("Attach", { cls: "sm ghost", icon: "plus", onclick: () => {
+      const v = uid.value.trim();
+      if (!v) return;
+      if (!linked.some((l) => l.uid === v)) linked.push({ uid: v, label: (known.find((k) => k.uid === v) || {}).label || "" });
+      draw();
+    } }));
+  };
+  draw();
+  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("div", { class: "grow" }, h("h2", null, "Where listeners find it"),
+    h("p", null, "Attach Journaline to your audio stations and receivers offer it while someone listens to them (usually as a \"Journaline\" or info button). It can also be its own data service, or both.")),
+    ed ? btn("Read my config…", { cls: "sm", icon: "import", onclick: async () => {
+      const r = await readMuxConfig({ saveEnsemble: true });
+      if (r) { toast(`Found ${r.service_list.length} services in your config.`, "ok"); route(); }
+    } }) : null),
+    h("div", { class: "card-body stack" }, standalone.el,
+      field("Attached to stations", list, { hint: known.length ? "Stations come from the last odr-dabmux config you read." : "Read your odr-dabmux config to pick stations from a list, or type their service uid." }),
+      picker,
+      h("div", { class: "small muted" }, "All attached stations share the same Journaline subchannel, so the content is only sent once.")),
+    ed ? h("div", { class: "card-foot" }, h("span", { class: "spacer" }), btn("Save", { cls: "primary", onclick: async () => {
+      try { await api("PATCH", `/api/services/${s.id}`, { mux: { ...m, standalone: standalone.box.checked, linked } }); toast("Saved - update your odr-dabmux config with the entries below.", "ok"); route(); } catch (e) { /* toasted */ }
+    } })) : null);
 }
 
 /* ============================== activity ============================== */
@@ -1513,10 +1648,11 @@ async function pageMux(root) {
   const merged = { info: {}, json: { services: {}, subchannels: {}, components: {} }, warnings: [] };
   for (const sn of snippets) {
     for (const sec of ["services", "subchannels", "components"]) {
-      merged.info[sec] = (merged.info[sec] ? merged.info[sec] + "\n" : "") + sn.info[sec];
-      Object.assign(merged.json[sec], sn.json[sec]);
+      if (sn.info[sec]) merged.info[sec] = (merged.info[sec] ? merged.info[sec] + "\n" : "") + sn.info[sec];
+      Object.assign(merged.json[sec], sn.json[sec] || {});
     }
   }
+  for (const sec of ["services", "subchannels", "components"]) if (!Object.keys(merged.json[sec]).length) delete merged.json[sec];
   const draw = (fmt) => {
     clear(box);
     if (!services.length) return put(box, h("div", { class: "muted" }, "Add a Journaline service first."));
