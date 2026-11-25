@@ -34,6 +34,8 @@ When it finishes, it prints the address to open, including a one-time **setup to
 
 ### First-run setup
 
+![Sign in](docs/screenshots/login.png)
+
 1. **Create the administrator** with the setup token.
 2. **Your multiplex**: a name for the panel and the ensemble ECC/EId. *Read from odr-dabmux config…* fills them in from a `.mux` or `.json` file.
 3. **Your first Journaline service**: name, output file, bitrate (8 kbps is plenty for most text services) and packet address.
