@@ -837,6 +837,52 @@ def _retarget(sid, old, new):
                  (json.dumps(ni), json.dumps(nl), time.time(), m["id"]))
 
 
+def _relabel(sid, jid, old_titles, new_title):
+    """Menu links whose text was the object's old title follow the new title.
+    Link text someone changed on purpose is left alone."""
+    olds = {t.strip() for t in old_titles if t and t.strip()}
+    olds |= {t[:60].strip() for t in olds}
+    if not olds or not new_title.strip():
+        return 0
+    n = 0
+    for m in db.q("SELECT id, items FROM objects WHERE service_id = ? AND type = 'menu'", (sid,)):
+        items = json.loads(m["items"])
+        changed = False
+        for it in items:
+            if it["target"] == jid and it["label"].strip() in olds:
+                it["label"] = new_title.strip()[:300]
+                changed = True
+                n += 1
+        if changed:
+            db.x("UPDATE objects SET items = ?, updated_at = ? WHERE id = ?", (json.dumps(items), time.time(), m["id"]))
+    return n
+
+
+@bp.post("/api/services/<int:sid>/link-text")
+@require("editor")
+def set_link_text(sid):
+    """Change the text a menu shows for one of its links."""
+    check_service(sid)
+    data = json_body()
+    menu_jid = _jid(data.get("menu"), "Menu")
+    target = _jid(data.get("target"), "Object")
+    label = _str(data, "label", 300, True, "Link text")
+    m = db.q1("SELECT * FROM objects WHERE service_id = ? AND jid = ? AND type = 'menu'", (sid, menu_jid))
+    if not m:
+        raise ApiError("Menu not found.", 404)
+    items = json.loads(m["items"])
+    i = data.get("index")
+    if not (isinstance(i, int) and 0 <= i < len(items) and items[i]["target"] == target):
+        i = next((n for n, it in enumerate(items) if it["target"] == target), None)
+    if i is None:
+        raise ApiError("That menu doesn't link to the object any more - reload the page.", 409)
+    items[i]["label"] = label
+    db.x("UPDATE objects SET items = ?, updated_at = ? WHERE id = ?", (json.dumps(items), time.time(), m["id"]))
+    db.mark_dirty()
+    audit("tree.link_text", f"{sid}:0x{target:04X}", {"menu": menu_jid})
+    return jsonify(ok=True)
+
+
 def _menu_descendants(sid, root):
     """Every object reachable from `root` through menu links (manual menus only)."""
     menus = {m["jid"]: [i["target"] for i in json.loads(m["items"])]
@@ -935,6 +981,8 @@ def update_object(oid):
         db.x(f"UPDATE objects SET {', '.join(k + ' = ?' for k in f)} WHERE id = ?", (*f.values(), oid))
         if new_jid != o["jid"]:
             _retarget(o["service_id"], o["jid"], new_jid)
+        if "title" in f and f["title"] != o["title"]:
+            _relabel(o["service_id"], new_jid, [o["title"]], f["title"])
     db.mark_dirty()
     audit("object.update", f"{o['service_id']}:0x{new_jid:04X}")
     return jsonify(ok=True)
@@ -1043,6 +1091,8 @@ def update_feed(fid):
         db.x(f"UPDATE feeds SET {', '.join(k + ' = ?' for k in f)} WHERE id = ?", (*f.values(), fid))
         if "jid" in f:
             _retarget(old["service_id"], old["jid"], f["jid"])
+        if "title" in f and f["title"] != old["title"]:
+            _relabel(old["service_id"], f.get("jid", old["jid"]), [old["title"], old["name"]], f["title"])
     err = None
     if "url" in f or "max_items" in f or "mode" in f:
         db.x("UPDATE feeds SET content_hash = '' WHERE id = ?", (fid,))

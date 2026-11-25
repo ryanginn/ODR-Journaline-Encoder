@@ -74,7 +74,7 @@ Receivers start at the **root object, `0x0000`**, normally the main menu. Each m
 
 Every object is limited to **4 092 bytes** before compression. The editor shows how full it is and refuses to save an object that is too large. Under *Advanced* you can set an **expiry time** (the object is taken off air and receivers hide it), a **lifetime after reception**, **button links**, the **language** for text-to-speech, how often it **repeats** in the carousel, and compression.
 
-**Reorganising:** drag objects and feeds in the tree. Drop one onto a menu to put it inside, or between two links to reorder. Hold **Alt** (Option on a Mac) while dropping to add another link instead of moving it, and drop a link on *Not linked from any menu* to remove it from its menu. Each editor also has an **In menus** box listing where the object is linked from, with *Move to…*, remove and *Add to menu…*; use it on touch screens, where dragging isn't available.
+**Reorganising:** drag objects and feeds in the tree. Drop one onto a menu to put it inside, or between two links to reorder. Hold **Alt** (Option on a Mac) while dropping to add another link instead of moving it, and drop a link on *Not linked from any menu* to remove it from its menu. Each editor also has an **In menus** box listing where the object is linked from, with the **text each menu shows** for the link (it follows the title unless you change it there), with *Move to…*, remove and *Add to menu…*; use it on touch screens, where dragging isn't available.
 
 Object IDs are assigned automatically (`0x0001` up) and can be changed. Links follow the change. Tick **favourite** on content that will always live at the same ID (e.g. "Sport headlines") so listeners can bookmark it.
 

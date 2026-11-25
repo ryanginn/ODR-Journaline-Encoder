@@ -996,7 +996,8 @@ function serviceContent(root, s, selParam) {
         drawTree();
       } }, icon(isOpen ? "chevronDown" : "chevronRight")) : h("span", { class: "jl-twist" }),
       typeBadge(node.type),
-      h("span", { class: "jl-title ellipsis" }, label && label !== node.title ? [label, h("span", { class: "muted" }, "  →  " + node.title)] : node.title || "(no title)"),
+      h("span", { class: "jl-title ellipsis", title: label && label !== node.title ? `Title: ${node.title}\nShown in the menu as: ${label}` : node.title },
+        node.title || "(no title)", label && label !== node.title ? h("span", { class: "muted" }, `  · menu shows “${label}”`) : null),
       issue ? h("i", { class: "dot " + (issue === "error" ? "red" : "amber"), title: issue === "error" ? "Has errors" : "Has warnings" }) : null,
       h("span", { class: "jl-id mono" }, hex4(node.jid)));
     tree.appendChild(dnd(r, { target: node.jid, into: node.jid, parent, index, draggable: node.jid !== 0 }));
@@ -1009,7 +1010,8 @@ function serviceContent(root, s, selParam) {
           { target: k.target, parent: node.jid, index: i, draggable: false }));
       } else if (path.has(k.target) || seen.has(k.target)) {
         tree.appendChild(dnd(h("div", { class: "jl-node ref", style: `--depth:${depth + 1}`, onclick: () => select(k.target), title: "Also linked from here - the object is shown in full where it first appears" },
-          h("span", { class: "jl-twist" }), h("span", { class: "type-badge" }, icon("cornerDown")), h("span", { class: "jl-title ellipsis" }, k.label, h("span", { class: "muted" }, `  →  ${child.title}`)),
+          h("span", { class: "jl-twist" }), h("span", { class: "type-badge" }, icon("cornerDown")), h("span", { class: "jl-title ellipsis" }, child.title,
+            k.label !== child.title ? h("span", { class: "muted" }, `  · menu shows “${k.label}”`) : null),
           h("span", { class: "jl-id mono" }, hex4(k.target))), { target: k.target, into: k.target, parent: node.jid, index: i, draggable: k.target !== 0 }));
       } else {
         seen.add(k.target);
@@ -1133,14 +1135,31 @@ function menusBox(s, jid, nodes, reload) {
     .sort((a, b) => a.jid - b.jid);
   const pick = sel("", [["", "Add to menu…"], ...options.map((m) => [m.jid, `${hex4(m.jid)} · ${m.title}`])], { "aria-label": "Add to menu" });
   pick.addEventListener("change", () => { if (pick.value !== "") move({ to: +pick.value }, "Added to the menu"); });
+  const title = (nodes.get(jid) || {}).title || "";
+  const linkText = (p) => {
+    // the text receivers show in that menu; it follows the title unless it was changed here
+    if (!ed) return h("span", { class: "grow muted ellipsis" }, `shows “${p.label}”`);
+    const input = inp(p.label, { maxlength: 300, class: "jl-linktext", "aria-label": `Text shown in ${p.menu.title}`, title: "The text this menu shows for the link" });
+    const save = async (v) => {
+      v = v.trim();
+      if (!v || v === p.label) { input.value = p.label; return; }
+      try { await api("POST", `/api/services/${s.id}/link-text`, { menu: p.menu.jid, index: p.index, target: jid, label: v }); toast("Link text saved - click Apply to publish.", "ok"); reload(jid); } catch (e) { input.value = p.label; }
+    };
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); save(input.value); } if (e.key === "Escape") input.value = p.label; });
+    input.addEventListener("change", () => save(input.value));
+    return h("div", { class: "jl-linktext-wrap" }, input,
+      title && p.label !== title ? btn("Use title", { cls: "sm ghost", title: `Show “${title}” in this menu`, onclick: () => save(title) }) : null);
+  };
   const moveTo = (p) => sel("", [["", "Move to…"], ...options.map((m) => [m.jid, `${hex4(m.jid)} · ${m.title}`])], { "aria-label": "Move to another menu",
     onchange: (e) => { if (e.target.value !== "") move({ from: p.menu.jid, from_index: p.index, to: +e.target.value }, "Moved"); } });
   return h("div", { class: "field" }, h("div", { class: "label-row" }, h("label", null, "In menus")),
+    parents.length ? h("div", { class: "hint jl-menus-hint" }, "Each menu shows its own text for the link - the box next to the menu name. It follows the title unless you change it here.") : null,
     h("div", { class: "stack tight" },
       jid === 0 ? h("div", { class: "small muted" }, "The root object - receivers start here.") : null,
       !parents.length && jid !== 0 ? h("div", { class: "small muted" }, "Not linked from any menu yet, so listeners can't reach it.") : null,
-      parents.map((p) => h("div", { class: "jl-parent-row" }, typeBadge("menu"),
-        h("span", { class: "grow ellipsis" }, h("b", null, p.menu.title), h("span", { class: "muted" }, `  ${hex4(p.menu.jid)} · link “${p.label}”`)),
+      parents.map((p) => h("div", { class: "jl-parent-row wrap" }, typeBadge("menu"),
+        h("span", { class: "jl-parent-name ellipsis" }, h("b", null, p.menu.title), h("span", { class: "muted mono" }, `  ${hex4(p.menu.jid)}`)),
+        linkText(p),
         ed && options.length ? moveTo(p) : null,
         ed ? iconBtn("x", "Remove from this menu", () => move({ from: p.menu.jid, from_index: p.index, to: null }, "Removed from the menu")) : null)),
       ed && options.length ? h("div", { class: "jl-add-menu" }, pick) : null));
