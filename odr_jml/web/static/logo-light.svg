@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="440" height="200" viewBox="0 0 440 200" fill="none">
+  <!-- Placeholder logo until the MPBNL Journaline logo is ready -->
+  <g stroke="#016666" stroke-width="12" stroke-linecap="round">
+    <path d="M58 32C14 76 14 124 58 168"/><path d="M90 60C64 86 64 114 90 140"/>
+    <path d="M382 32c44 44 44 92 0 136"/><path d="M350 60c26 26 26 54 0 80"/>
+  </g>
+  <text x="220" y="104" text-anchor="middle" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="66" font-weight="800" fill="#111827" letter-spacing="1">MPBNL</text>
+  <text x="220" y="152" text-anchor="middle" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="34" font-weight="700" fill="#111827">Journaline</text>
+</svg>
