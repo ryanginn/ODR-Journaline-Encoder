@@ -553,3 +553,20 @@ details summary { cursor: pointer; }
 }
 .jl-split > *, .jl-preview > * { min-width: 0; }
 .jl-meter span { position: absolute; right: 8px; top: 0; }
+
+/* tree drag and drop */
+.jl-node[draggable="true"] { cursor: grab; }
+.jl-node.dragging { opacity: .45; }
+.jl-node.drop-into { background: var(--accent-bg); border-color: var(--accent-2); border-style: dashed; }
+.jl-node.drop-before { box-shadow: inset 0 3px 0 -1px var(--accent-2); }
+.jl-node.drop-after { box-shadow: inset 0 -3px 0 -1px var(--accent-2); }
+.jl-unlink { border: 1px dashed transparent; border-radius: var(--radius-sm); margin-top: 6px; }
+.jl-unlink-hint { display: none; text-transform: none; letter-spacing: 0; }
+.jl-tree.dragging-on .jl-unlink { border-color: var(--border-strong); }
+.jl-tree.dragging-on .jl-unlink-hint { display: inline; }
+.jl-unlink.drop-out { border-color: var(--red); background: var(--red-bg); color: var(--red-text); }
+.jl-empty { padding: 2px 8px 6px; }
+.jl-parent-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--inset); min-width: 0; }
+.jl-parent-row select { width: auto; max-width: 180px; padding: 4px 8px; font-size: 13px; }
+.jl-add-menu select { max-width: 320px; }
+.jl-station-picker input, .jl-station-picker select { max-width: 360px; }
