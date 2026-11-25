@@ -1,0 +1,10 @@
+[Unit]
+Description=MPBNL Journaline WebFrontend updater
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/odr-journaline-encoder-update
+TimeoutStartSec=20min
+PrivateTmp=yes
